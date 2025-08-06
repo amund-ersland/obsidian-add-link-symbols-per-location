@@ -1,0 +1,10 @@
+{
+	"id": "prettify-links",
+	"name": "Prettify Links",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Provides a command to prettify links in current document by removing id prefix, by creating a title with id removed, and also add symbols which depends on the folders they are in.",
+	"author": "Amund Ersland",
+	"authorUrl": "https://github.com/amund-ersland",
+	"isDesktopOnly": false
+}
