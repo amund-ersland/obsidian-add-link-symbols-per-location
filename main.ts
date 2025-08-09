@@ -1,151 +1,55 @@
-import { Plugin, TFile } from 'obsidian';
-import { Extension } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, PluginValue, ViewPlugin, ViewUpdate, WidgetType } from '@codemirror/view';
+import { Plugin, PluginSettingTab, Setting, App } from "obsidian";
+import {
+  Decoration,
+  DecorationSet,
+  EditorView,
+  PluginValue,
+  ViewPlugin,
+  ViewUpdate,
+  WidgetType,
+} from "@codemirror/view";
 
 // ========================================
-// CONFIGURATION SECTION
+// Interfaces and defaults
 // ========================================
 
-/**
- * Configuration for emoji code replacements
- * Add new emoji mappings here as needed
- */
-const EMOJI_MAPPINGS: Record<string, string> = {
-  ':+1:': '👍',
-  ':sunglasses:': '😎',
-  ':smile:': '😄',
-  ':heart:': '❤️',
-  ':fire:': '🔥',
-  ':rocket:': '🚀',
-  ':star:': '⭐',
-  ':wink:': '😉',
-  ':thumbsup:': '👍',
-  ':thumbsdown:': '👎',
-  ':laugh:': '😂',
-  ':cry:': '😢',
-};
-
-/**
- * Configuration for folder-specific link decorations
- * Each entry defines a folder pattern and its corresponding emoji/symbol
- *
- * To add new folders:
- * 1. Add a new key with a descriptive name
- * 2. Set the folderPattern to match your folder structure
- * 3. Choose an emoji for that folder type
- * 4. Optionally customize the CSS class name
- */
 interface FolderConfig {
-  folderPattern: string | RegExp;  // Pattern to match folder paths
-  emoji: string;                   // Emoji to display for this folder
-  cssClass?: string;              // Optional CSS class for styling
-  description?: string;           // Optional description for documentation
+  folderPattern: string; // Pattern to match folder paths
+  emoji: string; // Emoji to display for this folder
+  enabled: boolean; // Whether this configuration is enabled
 }
 
-const FOLDER_CONFIGURATIONS: Record<string, FolderConfig> = {
-  // Important files configuration
-  important: {
-    folderPattern: /^important\/|\/important\//i,
-    emoji: '🚀',
-    cssClass: 'important-link-emoji',
-    description: 'Files in important folders'
-  },
+interface EmojiPluginSettings {
+  folderConfigurations: FolderConfig[];
+}
 
-  // Example: Add more folder configurations here
-  // You can easily add new ones by following this pattern:
-
-  // archived: {
-  //   folderPattern: /^archive\/|\/archive\//i,
-  //   emoji: '📦',
-  //   cssClass: 'archived-link-emoji',
-  //   description: 'Files in archive folders'
-  // },
-
-  // projects: {
-  //   folderPattern: /^projects\/|\/projects\//i,
-  //   emoji: '💼',
-  //   cssClass: 'project-link-emoji',
-  //   description: 'Files in project folders'
-  // },
-
-  // templates: {
-  //   folderPattern: /^templates\/|\/templates\//i,
-  //   emoji: '📋',
-  //   cssClass: 'template-link-emoji',
-  //   description: 'Template files'
-  // }
+const DEFAULT_SETTINGS: EmojiPluginSettings = {
+  folderConfigurations: [
+    {
+      folderPattern: "add-link-symbols-test-folder",
+      emoji: "🚀",
+      enabled: false,
+    },
+  ],
 };
 
 // ========================================
-// WIDGET CLASSES
+// Emoji Text Widgets
 // ========================================
 
 /**
- * Widget for rendering emoji replacements in the editor
- * Replaces emoji codes like :smile: with actual emojis
+ * Simple text widget that just renders the emoji as a text node
  */
-class EmojiWidget extends WidgetType {
+class EmojiTextWidget extends WidgetType {
   constructor(private emoji: string) {
     super();
   }
 
   toDOM(): HTMLElement {
-    const span = document.createElement('span');
-    span.textContent = this.emoji;
-    span.className = 'emoji-widget';
-    return span;
+      const span = document.createElement('span');
+      span.textContent = this.emoji + " ";
+      return span;
   }
-}
-
-/**
- * Widget for rendering folder-specific emojis next to links
- * Adds contextual emojis based on the linked file's folder location
- */
-class FolderLinkWidget extends WidgetType {
-  constructor(
-    private emoji: string,
-    private cssClass: string = 'folder-link-emoji'
-  ) {
-    super();
-  }
-
-  toDOM(): HTMLElement {
-    const span = document.createElement('span');
-    span.textContent = this.emoji;
-    span.className = this.cssClass;
-    span.style.marginLeft = '4px';
-    return span;
-  }
-}
-
-// ========================================
-// UTILITY FUNCTIONS
-// ========================================
-
-/**
- * Determines which folder configuration matches a given file path
- * @param filePath - The path of the file to check
- * @returns The matching folder configuration or null if no match
- */
-function getFolderConfigForPath(filePath: string): FolderConfig | null {
-  const normalizedPath = filePath.toLowerCase();
-
-  for (const [configName, config] of Object.entries(FOLDER_CONFIGURATIONS)) {
-    const { folderPattern } = config;
-
-    // Handle both string and RegExp patterns
-    if (typeof folderPattern === 'string') {
-      if (normalizedPath.includes(folderPattern.toLowerCase())) {
-        return config;
-      }
-    } else if (folderPattern instanceof RegExp) {
-      if (folderPattern.test(normalizedPath)) {
-        return config;
-      }
-    }
-  }
-
-  return null;
 }
 
 // ========================================
@@ -154,7 +58,6 @@ function getFolderConfigForPath(filePath: string): FolderConfig | null {
 
 /**
  * Main view plugin that handles live preview decorations
- * This class manages both emoji replacements and folder-based link decorations
  */
 class EmojiViewPlugin implements PluginValue {
   decorations: DecorationSet;
@@ -180,13 +83,20 @@ class EmojiViewPlugin implements PluginValue {
    * @returns The resolved file path or null if not found
    */
   private resolveFilePath(linkText: string): string | null {
-    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(linkText, '');
+    const file = this.plugin.app.metadataCache.getFirstLinkpathDest(
+      linkText,
+      ""
+    );
     return file ? file.path : null;
   }
 
   /**
    * Builds all decorations for the current view
-   * Handles both emoji replacements and folder-based link decorations
+   * Steps:
+   * 1. Scans each line for links using a regex pattern
+   * 2. For each link, resolves its file path
+   * 3. Checks if the file path matches any folder configuration
+   * 4. If a match is found and the cursor is not in the link range, adds the emoji decoration
    */
   buildDecorations(view: EditorView): DecorationSet {
     const decorations: any[] = [];
@@ -194,7 +104,6 @@ class EmojiViewPlugin implements PluginValue {
     const selection = view.state.selection.main;
 
     // Regular expressions for pattern matching
-    const emojiRegex = /:([a-zA-Z0-9_+-]+):/g;
     const linkRegex = /\[\[([^\]|]+)(\|([^\]]+))?\]\]/g;
 
     // Process each line in the document
@@ -202,37 +111,7 @@ class EmojiViewPlugin implements PluginValue {
       const line = doc.line(i);
       const lineText = line.text;
 
-      // ========================================
-      // EMOJI REPLACEMENT PROCESSING
-      // ========================================
-      let emojiMatch;
-      emojiRegex.lastIndex = 0;
-
-      while ((emojiMatch = emojiRegex.exec(lineText)) !== null) {
-        const fullMatch = emojiMatch[0];
-        const emojiCode = fullMatch;
-        const emoji = EMOJI_MAPPINGS[emojiCode];
-
-        if (emoji) {
-          const from = line.from + emojiMatch.index;
-          const to = from + fullMatch.length;
-
-          // Check if cursor is in the emoji range (don't replace if cursor is there)
-          const cursorInRange = this.isCursorInRange(selection, from, to);
-
-          if (!cursorInRange) {
-            decorations.push(
-              Decoration.replace({
-                widget: new EmojiWidget(emoji),
-              }).range(from, to)
-            );
-          }
-        }
-      }
-
-      // ========================================
-      // FOLDER-BASED LINK DECORATION PROCESSING
-      // ========================================
+      // run folder-based link decoration processing
       let linkMatch;
       linkRegex.lastIndex = 0;
 
@@ -251,19 +130,19 @@ class EmojiViewPlugin implements PluginValue {
           const resolvedPath = this.resolveFilePath(linkPath);
 
           if (resolvedPath) {
-            // Check if this file matches any folder configuration
-            const folderConfig = getFolderConfigForPath(resolvedPath);
+            // Check if this file matches any folder configuration from settings
+            const folderConfig = getFolderConfigForPath(
+              resolvedPath,
+              this.plugin.settings.folderConfigurations
+            );
 
             if (folderConfig) {
-              // Add the appropriate emoji decoration after the link
+              // Add emoji as simple text before the link
               decorations.push(
                 Decoration.widget({
-                  widget: new FolderLinkWidget(
-                    folderConfig.emoji,
-                    folderConfig.cssClass || 'folder-link-emoji'
-                  ),
-                  side: 1, // Place after the link
-                }).range(to)
+                  widget: new EmojiTextWidget(folderConfig.emoji),
+                  side: -1, // Before the link
+                }).range(from)
               );
             }
           }
@@ -282,9 +161,11 @@ class EmojiViewPlugin implements PluginValue {
    * @returns True if cursor is in range, false otherwise
    */
   private isCursorInRange(selection: any, from: number, to: number): boolean {
-    return (selection.from >= from && selection.from <= to) ||
-           (selection.to >= from && selection.to <= to) ||
-           (selection.from <= from && selection.to >= to);
+    return (
+      (selection.from >= from && selection.from <= to) ||
+      (selection.to >= from && selection.to <= to) ||
+      (selection.from <= from && selection.to >= to)
+    );
   }
 }
 
@@ -297,6 +178,8 @@ class EmojiViewPlugin implements PluginValue {
  * This is the entry point for the Obsidian plugin system
  */
 export default class EmojiPlugin extends Plugin {
+  settings: EmojiPluginSettings;
+  private viewPlugin: any;
 
   /**
    * Creates the CodeMirror view plugin for live preview mode
@@ -311,9 +194,32 @@ export default class EmojiPlugin extends Plugin {
         }
       },
       {
-        decorations: (pluginInstance: EmojiViewPlugin) => pluginInstance.decorations,
+        decorations: (pluginInstance: EmojiViewPlugin) =>
+          pluginInstance.decorations,
       }
     );
+  }
+
+  /**
+   * Refresh decorations in all open editors
+   */
+  refreshDecorations() {
+    // Trigger a refresh of the editor extensions
+    this.app.workspace.updateOptions();
+  }
+
+  /**
+   * Load settings from data.json
+   */
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  /**
+   * Save settings to data.json
+   */
+  async saveSettings() {
+    await this.saveData(this.settings);
   }
 
   /**
@@ -321,158 +227,177 @@ export default class EmojiPlugin extends Plugin {
    * Registers all necessary extensions and post-processors
    */
   async onload() {
+    // Load settings
+    await this.loadSettings();
+
+    // Register settings tab
+    this.addSettingTab(new EmojiPluginSettingTab(this.app, this));
+
     // ========================================
     // LIVE PREVIEW MODE REGISTRATION
     // ========================================
-    this.registerEditorExtension([this.createEmojiViewPlugin()]);
+    this.viewPlugin = this.createEmojiViewPlugin();
+    this.registerEditorExtension([this.viewPlugin]);
+  }
+}
 
-    // ========================================
-    // READING MODE - EMOJI POST PROCESSOR
-    // ========================================
-    this.registerMarkdownPostProcessor((element, context) => {
-      this.processEmojisInReadingMode(element);
-    });
+// ========================================
+// SETTINGS TAB
+// ========================================
 
-    // ========================================
-    // READING MODE - FOLDER LINK POST PROCESSOR
-    // ========================================
-    this.registerMarkdownPostProcessor((element, context) => {
-      this.processFolderLinksInReadingMode(element, context);
-    });
+class EmojiPluginSettingTab extends PluginSettingTab {
+  plugin: EmojiPlugin;
+
+  constructor(app: App, plugin: EmojiPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
   }
 
-  /**
-   * Processes emoji replacements in reading/preview mode
-   * @param element - The DOM element to process
-   */
-  private processEmojisInReadingMode(element: HTMLElement): void {
-    const walker = document.createTreeWalker(
-      element,
-      NodeFilter.SHOW_TEXT,
-      null,
-      false
-    );
+  display(): void {
+    const { containerEl } = this;
 
-    const textNodes: Text[] = [];
-    let node: Text;
+    containerEl.empty();
 
-    // Collect all text nodes to avoid modifying the tree while iterating
-    while (node = walker.nextNode() as Text) {
-      textNodes.push(node);
-    }
+    containerEl.createEl("h2", { text: "Folder Emoji Settings" });
 
-    // Process each text node for emoji patterns
-    textNodes.forEach(textNode => {
-      const text = textNode.textContent || '';
-      const emojiRegex = /:([a-zA-Z0-9_+-]+):/g;
-      let emojiMatch;
-      const emojiReplacements: { start: number, end: number, emoji: string }[] = [];
-
-      // Find all emoji patterns in this text node
-      while ((emojiMatch = emojiRegex.exec(text)) !== null) {
-        const emojiCode = emojiMatch[0];
-        const emoji = EMOJI_MAPPINGS[emojiCode];
-        if (emoji) {
-          emojiReplacements.push({
-            start: emojiMatch.index,
-            end: emojiMatch.index + emojiMatch[0].length,
-            emoji: emoji
-          });
-        }
-      }
-
-      // Apply replacements (process in reverse order to maintain positions)
-      if (emojiReplacements.length > 0) {
-        this.applyEmojiReplacements(textNode, emojiReplacements, text);
-      }
-    });
-  }
-
-  /**
-   * Applies emoji replacements to a text node
-   * @param textNode - The text node to modify
-   * @param replacements - Array of replacement data
-   * @param originalText - The original text content
-   */
-  private applyEmojiReplacements(
-    textNode: Text,
-    replacements: { start: number, end: number, emoji: string }[],
-    originalText: string
-  ): void {
-    const parent = textNode.parentNode;
-    if (!parent) return;
-
-    let currentText = originalText;
-
-    // Process replacements in reverse order to maintain correct positions
-    replacements.reverse().forEach(replacement => {
-      const before = currentText.substring(0, replacement.start);
-      const after = currentText.substring(replacement.end);
-
-      // Create emoji span element
-      const emojiSpan = document.createElement('span');
-      emojiSpan.textContent = replacement.emoji;
-      emojiSpan.className = 'emoji-replacement';
-
-      // Insert elements in reverse order (after, emoji, before)
-      if (after) {
-        const afterTextNode = document.createTextNode(after);
-        parent.insertBefore(afterTextNode, textNode);
-      }
-
-      parent.insertBefore(emojiSpan, textNode);
-
-      if (before) {
-        const beforeTextNode = document.createTextNode(before);
-        parent.insertBefore(beforeTextNode, textNode);
-      }
-
-      currentText = before;
+    containerEl.createEl("p", {
+      text: "Configure emojis for different folders. Patterns can be simple text or regex (wrapped in forward slashes).",
     });
 
-    parent.removeChild(textNode);
-  }
-
-  /**
-   * Processes folder-based link decorations in reading/preview mode
-   * @param element - The DOM element to process
-   * @param context - The markdown post processor context
-   */
-  private processFolderLinksInReadingMode(element: HTMLElement, context: any): void {
-    // Find all internal links (rendered as <a> tags with data-href)
-    const links = element.querySelectorAll('a.internal-link');
-
-    links.forEach((link: HTMLAnchorElement) => {
-      const href = link.getAttribute('data-href');
-      if (!href) return;
-
-      // Resolve the actual file path using Obsidian's API
-      const file = this.app.metadataCache.getFirstLinkpathDest(
-        href,
-        context.sourcePath || ''
+    // Add button to create new configuration
+    new Setting(containerEl)
+      .setName("Add new folder configuration")
+      .setDesc("Add a new folder pattern and emoji")
+      .addButton((button) =>
+        button
+          .setButtonText("Add")
+          .setCta()
+          .onClick(() => {
+            this.plugin.settings.folderConfigurations.unshift({
+              folderPattern: "",
+              emoji: "",
+              enabled: true,
+            });
+            this.plugin.saveSettings();
+            this.display(); // Refresh the settings display
+          })
       );
 
-      if (!file) return;
+    // Display all existing configurations
+    this.plugin.settings.folderConfigurations.forEach((config, index) => {
+      const setting = new Setting(containerEl)
+        .setName(`Configuration ${index + 1}`)
+        .setDesc("Folder pattern and emoji configuration");
 
-      // Check if this file matches any folder configuration
-      const folderConfig = getFolderConfigForPath(file.path);
+      // Folder pattern input
+      setting.addText((text) =>
+        text
+          .setPlaceholder("e.g., 1-projects or /^projects/")
+          .setValue(config.folderPattern)
+          .onChange(async (value) => {
+            config.folderPattern = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshDecorations();
+          })
+      );
 
-      if (folderConfig) {
-        // Prevent duplicate decorations
-        const existingEmoji = link.querySelector('.folder-link-emoji, .' + folderConfig.cssClass);
-        if (existingEmoji) return;
+      // Emoji input
+      setting.addText((text) =>
+        text
+          .setPlaceholder("single unicode character")
+          .setValue(config.emoji)
+          .onChange(async (value) => {
+            config.emoji = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshDecorations();
+          })
+      );
 
-        // Create and append the folder emoji
-        const emojiSpan = document.createElement('span');
-        emojiSpan.textContent = ' ' + folderConfig.emoji;
-        emojiSpan.className = folderConfig.cssClass || 'folder-link-emoji';
-        emojiSpan.style.marginLeft = '4px';
+      // Enable/disable toggle
+      setting.addToggle((toggle) =>
+        toggle
+          .setValue(config.enabled)
+          .onChange(async (value) => {
+            config.enabled = value;
+            await this.plugin.saveSettings();
+            this.plugin.refreshDecorations();
+          })
+      );
 
-        link.appendChild(emojiSpan);
-
-        // Add a class to the link itself for additional styling options
-        link.classList.add('has-folder-emoji');
-      }
+      // Delete button
+      setting.addButton((button) =>
+        button
+          .setButtonText("Delete")
+          .setWarning()
+          .onClick(async () => {
+            this.plugin.settings.folderConfigurations.splice(index, 1);
+            await this.plugin.saveSettings();
+            this.plugin.refreshDecorations();
+            this.display(); // Refresh the settings display
+          })
+      );
     });
+
+    // Reset to defaults button
+    new Setting(containerEl)
+      .setName("Reset to defaults")
+      .setDesc("Reset all configurations to the default settings")
+      .addButton((button) =>
+        button
+          .setButtonText("Reset")
+          .setWarning()
+          .onClick(async () => {
+            this.plugin.settings.folderConfigurations = [
+              ...DEFAULT_SETTINGS.folderConfigurations,
+            ];
+            await this.plugin.saveSettings();
+            this.plugin.refreshDecorations();
+            this.display();
+          })
+      );
   }
+}
+
+// ========================================
+// UTILITY FUNCTIONS
+// ========================================
+
+/**
+ * Determines which folder configuration matches a given file path
+ * @param filePath - The path of the file to check
+ * @param configurations - Array of folder configurations from settings
+ * @returns The matching folder configuration or null if no match
+ * Note: Both file paths and patterns are treated case-insensitively
+ */
+function getFolderConfigForPath(
+  filePath: string,
+  configurations: FolderConfig[]
+): FolderConfig | null {
+  const normalizedPath = filePath.toLowerCase();
+
+  for (const config of configurations) {
+    if (!config.enabled) continue;
+
+    const pattern = config.folderPattern.toLowerCase();
+
+    // Support both exact matches and regex patterns
+    if (pattern.startsWith("/") && pattern.endsWith("/")) {
+      // Treat as regex if wrapped in forward slashes
+      try {
+        const regex = new RegExp(pattern.slice(1, -1), "i");
+        if (regex.test(filePath)) {
+          return config;
+        }
+      } catch (e) {
+        console.warn("Invalid regex pattern:", pattern);
+      }
+    } else {
+      // Treat as simple string match
+      if (normalizedPath.includes(pattern)) {
+        return config;
+      }
+    }
+  }
+
+  return null;
 }
